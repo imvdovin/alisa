@@ -17,6 +17,7 @@ pub const REQUIRED_DIRECTORIES: &[&str] = &[
     "locks",
     "state",
     "state/session",
+    "state/runs",
     "tasks",
     "audit",
     "audit/runs",
@@ -207,6 +208,31 @@ impl Workspace {
             .expect("session state path is a fixed entry inside the workspace")
     }
 
+    /// Path to the directory that stores per-run artifacts.
+    #[allow(dead_code)]
+    pub fn runs_root(&self) -> PathBuf {
+        self.join("state/runs")
+            .expect("runs directory is a fixed entry inside the workspace")
+    }
+
+    /// Path to a specific run directory.
+    #[allow(dead_code)]
+    pub fn run_dir(&self, run_id: &str) -> Result<PathBuf> {
+        let mut path = self.runs_root();
+        let component = Self::sanitize_single_component(run_id, "run id")?;
+        path.push(component);
+        Ok(path)
+    }
+
+    /// Path to a run subdirectory matching a stage (plan/impl/review/etc).
+    #[allow(dead_code)]
+    pub fn run_stage_dir(&self, run_id: &str, stage: &str) -> Result<PathBuf> {
+        let mut path = self.run_dir(run_id)?;
+        let component = Self::sanitize_single_component(stage, "stage")?;
+        path.push(component);
+        Ok(path)
+    }
+
     fn prepare_lock_file(&self) -> Result<File> {
         let path = self.lock_path();
         if let Some(parent) = path.parent() {
@@ -262,6 +288,26 @@ impl Workspace {
         Ok(normalized)
     }
 
+    fn sanitize_single_component<'a>(component: &'a str, label: &str) -> Result<&'a str> {
+        if component.is_empty() {
+            bail!("{label} must not be empty");
+        }
+
+        let mut parts = Path::new(component).components();
+        match parts.next() {
+            Some(Component::Normal(_)) => {}
+            _ => bail!(
+                "{label} '{component}' must be a simple path component without separators"
+            ),
+        }
+
+        if parts.next().is_some() {
+            bail!("{label} '{component}' must not contain path separators");
+        }
+
+        Ok(component)
+    }
+
     fn remove_lock_obstacle(path: &Path) -> io::Result<()> {
         match fs::metadata(path) {
             Ok(metadata) => {
@@ -306,7 +352,7 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{cell::Cell, io};
+    use std::{cell::Cell, io, path::Path};
     use tempfile::tempdir;
 
     #[test]
@@ -395,6 +441,34 @@ mod tests {
             metadata.is_file(),
             "lock path must be a regular file after recovery"
         );
+    }
+
+    #[test]
+    fn run_dir_rejects_traversal_components() {
+        let temp = tempdir().expect("temp dir");
+        let workspace = Workspace::new(temp.path());
+
+        workspace
+            .run_dir("../evil")
+            .expect_err("run ids must stay inside runs root");
+        workspace
+            .run_stage_dir("run-123", "../stage")
+            .expect_err("stage components must not escape run directory");
+        workspace
+            .run_dir("foo/bar")
+            .expect_err("slashes in run id must be rejected");
+    }
+
+    #[test]
+    fn run_stage_dir_builds_paths_inside_runs() {
+        let temp = tempdir().expect("temp dir");
+        let workspace = Workspace::new(temp.path());
+
+        let path = workspace
+            .run_stage_dir("run-123", "plan")
+            .expect("valid stage path");
+        assert!(path.starts_with(&workspace.runs_root()));
+        assert!(path.ends_with(Path::new("state/runs/run-123/plan")));
     }
 
     #[test]

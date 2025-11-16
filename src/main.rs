@@ -1,5 +1,8 @@
 mod commands;
+mod config;
 mod metadata;
+mod runtime;
+mod tasks;
 mod workspace;
 
 use clap::{Parser, Subcommand};
